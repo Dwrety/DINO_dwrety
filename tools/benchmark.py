@@ -40,7 +40,7 @@ from numbers import Number
 Handle = Callable[[List[Any], List[Any]], Union[typing.Counter[str], Number]]
 
 from main import build_model_main, get_args_parser as get_main_args_parser
-from datasets import build_dataset
+from data import build_dataset
 
 
 def get_shape(val: object) -> typing.List[int]:

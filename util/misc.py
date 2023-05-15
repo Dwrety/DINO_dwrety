@@ -163,6 +163,44 @@ def reduce_dict(input_dict, average=True):
     return reduced_dict
 
 
+def broadcast_data(data):
+    if not torch.distributed.is_initialized():
+        return data
+    rank = dist.get_rank()
+    if rank == 0:
+        data_tensor = torch.tensor(data + [0], device="cuda")
+    else:
+        data_tensor = torch.tensor(data + [1], device="cuda")
+    torch.distributed.broadcast(data_tensor, 0)
+    while data_tensor.cpu().numpy()[-1] == 1:
+        time.sleep(1)
+
+    return data_tensor.cpu().numpy().tolist()[:-1]
+
+
+def reduce_sum(tensor):
+    if get_world_size() <= 1:
+        return tensor
+
+    tensor = tensor.clone()
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    return tensor
+
+
+def shared_random_seed():
+    """
+    Returns:
+        int: a random number that is the same across all workers.
+            If workers need a shared RNG, they can use this shared seed to
+            create one.
+
+    All workers must call this function, otherwise it will deadlock.
+    """
+    ints = np.random.randint(2 ** 31)
+    all_ints = all_gather(ints)
+    return all_ints[0]
+
+
 class MetricLogger(object):
     def __init__(self, delimiter="\t"):
         self.meters = defaultdict(SmoothedValue)
@@ -518,6 +556,21 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
 
 
+def synchronize():
+    """
+    Helper function to synchronize (barrier) among all processes when
+    using distributed training
+    """
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        return
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return
+    dist.barrier()
+
+
 @torch.no_grad()
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
@@ -557,7 +610,6 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
         return torchvision.ops.misc.interpolate(input, size, scale_factor, mode, align_corners)
 
 
-
 class color_sys():
     def __init__(self, num_colors) -> None:
         self.num_colors = num_colors
@@ -572,11 +624,13 @@ class color_sys():
     def __call__(self, idx):
         return self.colors[idx]
 
+
 def inverse_sigmoid(x, eps=1e-3):
     x = x.clamp(min=0, max=1)
     x1 = x.clamp(min=eps)
     x2 = (1 - x).clamp(min=eps)
     return torch.log(x1/x2)
+
 
 def clean_state_dict(state_dict):
     new_state_dict = OrderedDict()
